@@ -34,12 +34,30 @@ get_field() {
 }
 
 # --- Simple JSON field setter ---
+# The value has to survive two layers of parsing:
+#   1. JSON — a literal backslash or double quote must be escaped in the output,
+#      otherwise the file is no longer valid JSON.
+#   2. sed  — the delimiter, '&' (whole match) and '\' (escape) must be escaped
+#      in the replacement, or sed mangles the result.
+# So: JSON-escape first, then sed-escape, and use '%' as the delimiter.
+#
+# '%' is chosen because '@' and '#' after a '$' would be expanded by the shell
+# inside a double-quoted expression: "s@}$@..." makes the shell substitute $@
+# (all positional parameters) and corrupts the command.
+#
+# The value matcher accepts either a quoted JSON string or a bare token, because
+# the config mixes both ("quality": "1080p" vs "onboarded": false). Inside the
+# quoted branch the body is a sequence of escaped pairs (\\.) or characters that
+# are neither '"' nor '\'; a naive [^"]* stops at the first escaped quote, so
+# re-setting such a key would silently match nothing and report false success.
 set_field() {
   JSON="$1" KEY="$2" VAL="$3"
-  if echo "$JSON" | grep -q "\"$KEY\""; then
-    echo "$JSON" | sed -E "s/(\"$KEY\"[[:space:]]*:[[:space:]]*)(\"?[^\"]*\"?)([,}])/\1\"$VAL\"\3/"
+  JVAL=$(printf '%s' "$VAL" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  ESC=$(printf '%s' "$JVAL" | sed -e 's/[\\&%]/\\&/g')
+  if printf '%s' "$JSON" | grep -qF "\"$KEY\""; then
+    printf '%s' "$JSON" | sed -E "s%(\"$KEY\"[[:space:]]*:[[:space:]]*)(\"([^\"\\\\]|\\\\.)*\"|[^,}]+)([,}])%\1\"$ESC\"\4%"
   else
-    echo "$JSON" | sed -E "s/}$/, \"$KEY\": \"$VAL\"}/" | sed -E 's/\{,/\{/'
+    printf '%s' "$JSON" | sed -E "s%[}]$%, \"$KEY\": \"$ESC\"}%" | sed -E 's%[{],%{%'
   fi
 }
 
